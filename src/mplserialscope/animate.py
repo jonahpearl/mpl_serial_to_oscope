@@ -305,7 +305,7 @@ def animated_plot_process(
 
         # Update the time to be shown
         if (time.time() - tic) > 1:
-            time_txt = f"approx time (sec): {time.time() - tic:.2f}"
+            time_txt = f"Time (sec): {time.time() - tic:.2f}"
 
         # Update the boolean dots
         if len(bool_vals) > 0:
