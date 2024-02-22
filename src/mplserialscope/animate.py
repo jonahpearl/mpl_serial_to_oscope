@@ -90,7 +90,10 @@ class MPLAnimator:
             ylims=signal_yvals,
         )
         self.q_downsample_counter = 0
-        self.q_downsample = q_downsample
+        
+        self.q_downsample = int(q_downsample)
+        if q_downsample < 1:
+            raise ValueError("q_downsample must be an integer >= 1") 
 
     @staticmethod
     def get_main_process(
@@ -131,7 +134,13 @@ class MPLAnimator:
         header_list = [s.strip(" \r\n\t") for s in header.split(",")]
         self.signal_idx = [
             i for i, val in enumerate(header_list) if val == self.signal_header_name
-        ][0]
+        ]
+        if len(self.signal_idx) == 0:
+            raise ValueError(f"No col in header found for signal {self.signal_header_name}")
+        elif len(self.signal_idx) > 1:
+            raise ValueError(f"Multiple cols in header found for signal {self.signal_header_name}")
+        else:
+            self.signal_idx = self.signal_idx[0]
 
         if self.bool_header_names is not None:
             self.bool_signal_idx = [
@@ -164,8 +173,6 @@ class MPLAnimator:
     def update(self, line):
         """Extract the data from the line and send to the animate process."""
 
-        # pdb.set_trace()
-
         # Extract data from correct index in line
         self.current_val = np.array(line.split(",")[self.signal_idx], dtype="float")
 
@@ -194,14 +201,22 @@ class MPLAnimator:
         self.q_downsample_counter = self.q_downsample_counter % self.q_downsample
 
         # Decide if sending to animator
-        if self.q_downsample_counter == 0:
+        if self.q_downsample_counter == 0 and not self.animator_exit_event.is_set():
             self.queue.put((self.data, bool_vals, text_vals))
 
         return
 
     def close(self):
         """Close the animator process and queue. Force the queue to close"""
+
+        # Empty the queue to prevent weird gc bug when closing queue
+        while self.queue.qsize():
+            self.queue.get()
+        
+        # Shut everything down
         self.animator_exit_event.set()
+        self.queue.close()  # this can throw weird issues when it get's gc'd, but it's harmless, see https://github.com/python/cpython/pull/31913
+        self.queue.join_thread()
         self.animate_process.join()
 
 
@@ -296,7 +311,7 @@ def animated_plot_process(
             )
         except Empty:
             continue
-        except ValueError:
+        except (ValueError, BrokenPipeError):
             print("queue closed")
             break
 
