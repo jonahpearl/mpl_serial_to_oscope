@@ -7,7 +7,7 @@ from setuptools import setup
 
 setup(
     name='mplserialscope',
-    version='0.1.0',
+    version='0.1.1',
     license='MIT or Allen Institute Software License',
     description='A utility to take continuous serial output (i.e. from an Arduino) and plot it in real-time with matplotlib ',
     author='Jonah Pearl',
