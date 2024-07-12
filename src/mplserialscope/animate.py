@@ -1,6 +1,7 @@
 import time
 from multiprocessing import Event, Process, Queue
 from queue import Empty
+from warnings import warn
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -210,7 +211,7 @@ class MPLAnimator:
         """Close the animator process and queue. Force the queue to close"""
 
         # Empty the queue to prevent weird gc bug when closing queue
-        while self.queue.qsize():
+        while not self.queue.empty():
             self.queue.get()
         
         # Shut everything down
@@ -297,6 +298,14 @@ def animated_plot_process(
     plt.show(block=False)
     plt.pause(1)
 
+    # Check if we cna read queue size
+    try:
+        qsize = data_queue.qsize()
+        qsize_readable = True
+    except NotImplementedError:
+        qsize_readable = False
+        warn("Queue size is not readable on this platform")
+
     # Loop to update the plot
     current_timeout = 10
     while not exit_event.is_set():
@@ -330,7 +339,11 @@ def animated_plot_process(
                 else:
                     bool_dots[i].set_color("red")
 
-        queue_txt = f"queue sz: {data_queue.qsize()}"
+        if qsize_readable:
+            qsize = data_queue.qsize()
+        else:
+            qsize = "N/A"
+        queue_txt = f"queue sz: {qsize}"
 
         # # Update the user-specified text annotations
         text_txt = "\n".join(
