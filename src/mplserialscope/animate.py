@@ -5,6 +5,7 @@ from warnings import warn
 
 import matplotlib
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 import numpy as np
 
 from mplserialscope.blitting import BlitManager
@@ -30,6 +31,7 @@ class MPLAnimator:
         signal_header_name="therm",
         signal_yvals=None,
         bool_header_names=None,
+        bool_marker_names=None,
         text_header_names=None,
         q_downsample=15,
     ):
@@ -51,7 +53,11 @@ class MPLAnimator:
 
         bool_header_names : list of str
             List of boolean header names to parse from the serial output.
-            Will be displayed as colored dots appearing in real time on the plot.
+            Will be displayed as static colored dots appearing in real time on the plot.
+
+        bool_marker_names: dict
+            Dictionary with keys as boolean header names, values as colors.
+            If provided, colored dots will be displayed on the signal at the moment / xy position where the given boolean data is True.
 
         text_header_names : list of str
             List of text header names to parse from the serial output.
@@ -70,12 +76,17 @@ class MPLAnimator:
         self.text_header_names = (
             text_header_names if text_header_names is not None else []
         )
+        self.bool_marker_names = (
+            bool_marker_names if bool_marker_names is not None else {}
+        )
 
         # Animator vars
         self.nsamp = n_samples
         self.current_val = 0
         self.fs = fs
         self.data = np.zeros((n_samples,), dtype="float")
+        # self.marker_ydata = {name: np.zeros((n_samples), dtype="float") for name in bool_marker_names.keys()} if bool_marker_names else {}
+        self.marker_cdata = {name: [None] * n_samples for name in bool_marker_names.keys()} if bool_marker_names else {}
         self.data_head_idx = 0  # to trace out data like an o-scope
 
         # MP vars
@@ -86,6 +97,7 @@ class MPLAnimator:
             self.fs,
             self.animator_exit_event,
             self.bool_header_names,
+            self.bool_marker_names,
             self.text_header_names,
             n_samples=n_samples,
             ylims=signal_yvals,
@@ -98,7 +110,7 @@ class MPLAnimator:
 
     @staticmethod
     def get_main_process(
-        data_queue, fs, exit_event, bool_val_names, text_val_names, **kwargs
+        data_queue, fs, exit_event, bool_val_names, bool_marker_names, text_val_names, **kwargs
     ):
         """Open a blitting animate process.
 
@@ -116,7 +128,7 @@ class MPLAnimator:
         """
         animate_process = Process(
             target=animated_plot_process,
-            args=(data_queue, fs, exit_event, bool_val_names, text_val_names),
+            args=(data_queue, fs, exit_event, bool_val_names, bool_marker_names, text_val_names),
             kwargs=kwargs,
         )
         return animate_process
@@ -153,6 +165,16 @@ class MPLAnimator:
         else:
             self.bool_signal_idx = []
 
+        if self.bool_marker_names is not None:
+            self.bool_marker_idx = [
+                i
+                for name in self.bool_marker_names.keys()
+                for i, val in enumerate(header_list)
+                if val == name
+            ]
+        else:
+            self.bool_marker_idx = []
+
         if self.text_header_names is not None:
             self.text_signal_idx = [
                 i
@@ -186,6 +208,24 @@ class MPLAnimator:
         else:
             bool_vals = []
 
+        # Extract bool marker vals, if any
+        if len(self.bool_marker_idx) > 0:
+            bool_marker_vals = [
+                int(line.split(",")[idx]) for idx in self.bool_marker_idx
+            ]
+            for i, (name, val) in enumerate(zip(self.bool_marker_names.keys(), bool_marker_vals)):
+                if val:
+                    x = self.data_head_idx / self.fs
+                    y = self.current_val
+                    self.marker_cdata[name][self.data_head_idx] = (x,y)
+                else:
+                    self.marker_cdata[name][self.data_head_idx] = None
+        else:
+            bool_marker_vals = []
+        stale_idx = (self.data_head_idx + int(self.nsamp / 10)) % self.nsamp
+        for name in self.marker_cdata:
+            self.marker_cdata[name][stale_idx] = None
+
         # Extract text vals, if any
         if len(self.text_signal_idx) > 0:
             text_vals = [line.split(",")[idx] for idx in self.text_signal_idx]
@@ -203,7 +243,7 @@ class MPLAnimator:
 
         # Decide if sending to animator
         if self.q_downsample_counter == 0 and not self.animator_exit_event.is_set():
-            self.queue.put((self.data, bool_vals, text_vals))
+            self.queue.put((self.data, bool_vals, text_vals, self.marker_cdata))
 
         return
 
@@ -226,6 +266,7 @@ def animated_plot_process(
     fs,
     exit_event,
     bool_val_names,
+    bool_marker_names,
     text_val_names,
     n_samples=100,
     ylims=(0, 1023),
@@ -249,9 +290,26 @@ def animated_plot_process(
 
     # Add the line for the signal
     xvals = np.arange(n_samples) / fs
-    (ln,) = ax.plot(xvals, data, animated=True)
+    (ln,) = ax.plot(xvals, data, animated=True, zorder=1e4, color="k")
     ax.set_xlim((0, n_samples / fs))
     ax.set_ylim(ylims)
+
+    # Add the boolean marker dots as a scatter plot
+    bool_marker_lines = {}
+    for name, color in bool_marker_names.items():
+        line = Line2D(
+            # [], [],
+            xvals, data,
+            linestyle="None",
+            marker="x",
+            markersize=7,
+            # markerfacecolor=color,
+            markeredgecolor=color,   # no visible edge
+            animated=True,
+            zorder=1
+        )
+        ax.add_line(line)
+        bool_marker_lines[name] = line
 
     # Generate the boolean signal dots
     # These should be stacked in the bottom left hand corner of the plot, and each dot should be aligned with the name of that boolean signal
@@ -292,7 +350,7 @@ def animated_plot_process(
     )
 
     # Add all the animated artists to the blit manager
-    bm = BlitManager(fig.canvas, [ln, frame_text] + bool_dots)
+    bm = BlitManager(fig.canvas, list(bool_marker_lines.values()) + bool_dots + [frame_text, ln])
 
     # Make sure our window is on the screen and drawn
     plt.show(block=False)
@@ -312,7 +370,7 @@ def animated_plot_process(
         # Read data from the queue, without blocking.
         # Will raise the "empty" exception if it's empty, or the ValueError exception if it's closed.
         try:
-            signal_vec, bool_vals, text_vals = data_queue.get(
+            signal_vec, bool_vals, text_vals, marker_cdata = data_queue.get(
                 timeout=current_timeout
             )  # tuple of (signal vec, bool vals, text vals), or empty if end
             current_timeout = (
@@ -320,19 +378,31 @@ def animated_plot_process(
             )
         except Empty:
             continue
-        except (ValueError, BrokenPipeError):
+        # except (ValueError, BrokenPipeError):
+        except BrokenPipeError:
             print("queue closed")
             break
 
         # Update the animated line
         ln.set_ydata(signal_vec)
 
+        # Update the scatter plot with the signal data
+        for name, cdata in marker_cdata.items():
+            line = bool_marker_lines[name]
+            xy = [pt for pt in marker_cdata[name] if pt is not None]
+            if xy:
+                x_vals, y_vals = zip(*xy)
+            else:
+                x_vals, y_vals = [], []
+            line.set_data(x_vals, y_vals)
+        
         # Update the time to be shown
         if (time.time() - tic) > 1:
             time_txt = f"Time (sec): {time.time() - tic:.2f}"
 
         # Update the boolean dots
         if len(bool_vals) > 0:
+            print("Updating bool dots")
             for i, val in enumerate(bool_vals):
                 if val:
                     bool_dots[i].set_color("green")
