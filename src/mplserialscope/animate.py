@@ -402,7 +402,6 @@ def animated_plot_process(
 
         # Update the boolean dots
         if len(bool_vals) > 0:
-            print("Updating bool dots")
             for i, val in enumerate(bool_vals):
                 if val:
                     bool_dots[i].set_color("green")
